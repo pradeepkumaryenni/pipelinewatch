@@ -1,0 +1,22 @@
+# PipelineWatch configuration (sample values that match the bundled simulator).
+#
+# databricks_workspaces: Databricks webhooks carry a workspace id, not an environment name.
+#   Map each workspace id to its environment and host so alerts say "prod" and link to the run.
+# pipeline_tiers: business impact per pipeline or job (1 = revenue or regulatory impact).
+#   Anything not listed is tier 3.
+
+databricks_workspaces:
+  "1234567890123456":
+    environment: prod
+    host: https://adb-1234567890123456.7.azuredatabricks.net
+  "2345678901234567":
+    environment: dev
+    host: https://adb-2345678901234567.7.azuredatabricks.net
+
+pipeline_tiers:
+  nightly_sales_etl: 1
+  pl_load_finance_gl: 1
+  gold.sales_daily: 1
+  pl_ingest_crm_accounts: 2
+  customer_360_refresh: 2
+  pl_refresh_marketing_lookup: 3
