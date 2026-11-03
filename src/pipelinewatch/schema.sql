@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS pipelinewatch.alert_log (
 CREATE INDEX IF NOT EXISTS alert_log_fingerprint_idx ON pipelinewatch.alert_log (fingerprint, received_at DESC);
 CREATE INDEX IF NOT EXISTS alert_log_received_idx ON pipelinewatch.alert_log (received_at DESC);
 
+-- v0.3: set when a LOW alert has gone out in the daily digest.
+ALTER TABLE pipelinewatch.alert_log ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS alert_log_digest_idx ON pipelinewatch.alert_log (alert_id)
+    WHERE decision = 'DIGEST' AND digested_at IS NULL;
+
 -- One row per fingerprint with an open notification window.
 CREATE TABLE IF NOT EXISTS pipelinewatch.dedup_state (
     fingerprint        TEXT        PRIMARY KEY,

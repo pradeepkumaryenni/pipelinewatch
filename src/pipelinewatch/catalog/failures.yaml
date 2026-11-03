@@ -1,0 +1,341 @@
+# PipelineWatch failure catalog.
+#
+# Each entry explains one common failure in plain English and lists what to try first.
+# Matching (first match wins, in file order):
+#   sources        alert sources the entry applies to (databricks, azure_monitor, or any generic source name; omit = all)
+#   event_types    failure / sla_breach (omit = all)
+#   patterns       case-insensitive regexes searched in the error text (error message, error code, FailureType)
+#   failure_type   ADF FailureType dimension (UserError / SystemError) for entries without patterns
+#   fallback       true = only used when no specific entry matched
+# examples         sample error texts that MUST match this entry (checked by the test suite), so the catalog
+#                  tests itself. Fallback entries list example alerts instead.
+#
+# Keep explanations generic and vendor-accurate. Don't add links that haven't been checked.
+
+failures:
+  - id: credential_expired
+    title: Credential or secret expired
+    severity_hint: HIGH
+    patterns:
+      - 'AADSTS7000222'
+      - 'AADSTS7000215'
+      - 'client secret.*(expired|invalid)'
+      - 'invalid_client'
+      - 'SecretNotFound'
+      - 'Key ?Vault.*(forbidden|access denied|not found)'
+      - 'signature.*expired|SAS.*expired|AuthenticationFailed'
+    cause: >-
+      The pipeline couldn't sign in. A service principal secret, SAS token or Key Vault secret has
+      expired, been rotated, or the identity lost access to Key Vault.
+    fix:
+      - Check the secret's expiry date in Key Vault or the app registration and rotate it.
+      - Update the linked service or secret scope to the new value, then run Test connection.
+      - Prefer managed identity over client secrets so there's nothing to expire.
+      - Add an expiry reminder (Key Vault "near expiry" event) so this doesn't surprise you again.
+    examples:
+      - "AADSTS7000222: The provided client secret keys for app '1111' are expired."
+      - "Operation failed: SecretNotFound. A secret with (name/id) sql-password was not found in this key vault."
+      - "Server failed to authenticate the request. AuthenticationFailed: Signature not valid in the specified time frame"
+
+  - id: copy_type_conversion
+    title: A value doesn't fit the destination column type
+    severity_hint: HIGH
+    patterns:
+      - 'UserErrorInvalidDataValue'
+      - 'TypeConversionFailure'
+      - 'Conversion failed when converting'
+      - 'Column .* contains an invalid value'
+      - 'Error converting data type'
+      - 'String or binary data would be truncated'
+    cause: >-
+      The source sent a value the destination column can't hold, e.g. text in a numeric column, a
+      badly formatted date, or a string longer than the column allows.
+    fix:
+      - Open the failed Copy activity's output and find the column and row in the error.
+      - Fix the column mapping or widen the destination type if the new values are legitimate.
+      - "For messy sources: land the data as strings first, then cast and validate in Spark or SQL."
+      - Turn on fault tolerance with a skipped-rows log if a few bad rows shouldn't stop the load.
+    examples:
+      - "ErrorCode=UserErrorInvalidDataValue,'Column 'amount' contains an invalid value 'N/A'.'"
+      - "Conversion failed when converting date and/or time from character string."
+      - "String or binary data would be truncated in table 'dbo.customers', column 'city'."
+
+  - id: schema_drift
+    title: The source schema changed
+    severity_hint: HIGH
+    patterns:
+      - 'schema mismatch'
+      - 'DELTA_FAILED_TO_MERGE_FIELDS'
+      - 'UNRESOLVED_COLUMN'
+      - 'cannot resolve .* given input columns'
+      - 'Invalid column name'
+      - 'column .* (does not exist|not found)'
+      - 'SchemaMappingCannotInferSinkColumnType'
+    cause: >-
+      A column was added, renamed, removed or changed type upstream, and the pipeline's mapping or the
+      target table still expects the old shape.
+    fix:
+      - Compare today's source columns with the last successful run.
+      - Update the mapping or target table, or allow schema evolution (mergeSchema) only if the change is intended.
+      - Agree a data contract with the source team so breaking changes are announced.
+    examples:
+      - "AnalysisException: A schema mismatch detected when writing to the Delta table."
+      - "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column or function parameter with name `cust_id` cannot be resolved."
+      - "Invalid column name 'customer_segment'."
+
+  - id: merge_duplicate_source_rows
+    title: MERGE found duplicate keys in the source
+    severity_hint: HIGH
+    patterns:
+      - 'DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW'
+      - 'multiple source rows matched'
+    cause: >-
+      The batch being merged has more than one row for the same key, so Delta can't decide which one
+      should update the target row.
+    fix:
+      - "De-duplicate the source before the MERGE, e.g. row_number() over the key ordered by updated_at desc, keep 1."
+      - Find out why duplicates arrived (a resent file, a replayed extract) and add a check for it.
+    examples:
+      - "[DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE] Cannot perform Merge as multiple source rows matched and attempted to modify the same target row"
+
+  - id: delta_concurrent_write
+    title: Two jobs wrote to the same Delta table at once
+    severity_hint: HIGH
+    patterns:
+      - 'Concurrent(Append|Delete(Read|Delete)|Transaction|Modification)Exception'
+      - 'MetadataChangedException'
+      - 'ProtocolChangedException'
+    cause: >-
+      Another job or notebook changed the same Delta table (or the same partitions) while this one was
+      writing, and Delta's optimistic concurrency rejected this commit.
+    fix:
+      - Find the other writer in the table history (DESCRIBE HISTORY) at the failure time.
+      - Schedule the two jobs so they don't overlap, or make each touch separate partitions with explicit predicates.
+      - A retry usually succeeds once the other write finishes; add a job retry with a short delay.
+    examples:
+      - "io.delta.exceptions.ConcurrentAppendException: Files were added to partition [date=2026-11-03] by a concurrent update."
+      - "ConcurrentDeleteReadException: This transaction attempted to read one or more files that were deleted by a concurrent update."
+
+  - id: spark_out_of_memory
+    title: Spark ran out of memory
+    severity_hint: HIGH
+    patterns:
+      - 'OutOfMemoryError'
+      - 'Java heap space'
+      - 'GC overhead limit exceeded'
+      - 'exceeding memory limits'
+      - 'exit code 137'
+      - 'ExecutorLostFailure'
+      - 'Driver .* (out of memory|OOM)'
+    cause: >-
+      An executor or the driver ran out of memory, often from collecting a large result to the driver,
+      broadcasting a table that's too big, or one partition holding far more data than the rest (skew).
+    fix:
+      - Check the Spark UI for the failed stage. One huge task means skew; every task large means too few partitions.
+      - Remove collect()/toPandas() on big data and avoid broadcasting large tables.
+      - Enable AQE skew-join handling or salt the hot key, then increase shuffle partitions.
+      - Only then consider a bigger node type.
+    examples:
+      - "java.lang.OutOfMemoryError: Java heap space"
+      - "ExecutorLostFailure (executor 7 exited caused by one of the running tasks) Reason: Container killed by YARN for exceeding memory limits."
+      - "The spark driver has stopped unexpectedly and is restarting. Driver is out of memory."
+
+  - id: cluster_terminated
+    title: The cluster stopped or couldn't start
+    severity_hint: HIGH
+    patterns:
+      - 'CLOUD_PROVIDER_LAUNCH_FAILURE'
+      - 'DRIVER_UNREACHABLE'
+      - 'SPOT_INSTANCE_TERMINATION'
+      - 'INSTANCE_POOL_CLUSTER_FAILURE'
+      - 'Cluster .* (terminated|was terminated)'
+      - 'quota.*exceeded|QuotaExceeded'
+    cause: >-
+      The job's cluster was lost or never started: spot capacity was reclaimed, the cloud couldn't
+      provide VMs (quota or capacity), or the driver stopped responding.
+    fix:
+      - Check the cluster event log for the termination reason.
+      - For spot losses, use an on-demand driver (and on-demand first nodes) for critical jobs.
+      - For quota errors, request more vCPU quota for that VM family and region.
+      - Add a job retry; most launch failures are transient.
+    examples:
+      - "Cluster 0101-123456-abcd was terminated. Reason: CLOUD_PROVIDER_LAUNCH_FAILURE"
+      - "Run failed with error message: Cluster was terminated. Reason: SPOT_INSTANCE_TERMINATION"
+
+  - id: storage_permission_denied
+    title: No permission to read or write the data
+    severity_hint: HIGH
+    patterns:
+      - 'AuthorizationPermissionMismatch'
+      - 'This request is not authorized to perform this operation'
+      - 'PERMISSION_DENIED'
+      - 'AccessDenied'
+      - 'User does not have (SELECT|MODIFY|USE)'
+    cause: >-
+      The identity running the pipeline reached the storage account or catalog but isn't allowed to
+      do this operation. Typically a missing RBAC role, ACL or Unity Catalog grant, often after a
+      permission clean-up.
+    fix:
+      - Note which identity ran the job (service principal, managed identity or user).
+      - Check its role on the storage account (e.g. Storage Blob Data Contributor) or its Unity Catalog grants.
+      - Grant the smallest permission that fixes it, and record why.
+    examples:
+      - "This request is not authorized to perform this operation using this permission. AuthorizationPermissionMismatch"
+      - "[PERMISSION_DENIED] User does not have SELECT on Table 'main.sales.orders'."
+
+  - id: source_file_missing
+    title: The expected source file isn't there
+    severity_hint: HIGH
+    patterns:
+      - 'PathNotFound'
+      - 'BlobNotFound'
+      - 'The specified path does not exist'
+      - 'FileNotFound'
+      - 'No such file or directory'
+      - 'Path does not exist'
+    cause: >-
+      The pipeline looked for a file or folder that hasn't arrived yet (a late upstream drop), was
+      moved, or has a different name or date in its path than expected.
+    fix:
+      - Check whether the file has arrived since, and when it usually lands.
+      - Add a Validation or Get Metadata step with a timeout before the copy, or switch to a storage event trigger.
+      - Confirm the path expression (date formats and time zones are common culprits).
+    examples:
+      - "ErrorCode=UserErrorFileNotFound,'The specified path does not exist. Path: landing/sales/2026-11-03/'"
+      - "AnalysisException: [PATH_NOT_FOUND] Path does not exist: abfss://raw@lake.dfs.core.windows.net/orders/2026-11-03"
+
+  - id: self_hosted_ir_offline
+    title: The self-hosted integration runtime is offline
+    severity_hint: HIGH
+    patterns:
+      - 'self-hosted integration runtime.*(offline|unavailable|not available)'
+      - 'integration runtime .* (is offline|offline)'
+      - 'no (connected|available) node'
+    cause: >-
+      The on-premises gateway machine (SHIR) that reaches internal databases or file shares is stopped,
+      disconnected or out of resources, so ADF can't get to the source.
+    fix:
+      - Check the SHIR node status in ADF (Manage → Integration runtimes) and the VM itself.
+      - Restart the integration runtime service; look at CPU, memory and disk on the node.
+      - Add a second node for high availability on critical pipelines.
+    examples:
+      - "The self-hosted integration runtime 'shir-onprem' is offline."
+      - "Integration runtime shir-prod-01 is offline, no connected node is available."
+
+  - id: network_unreachable
+    title: Couldn't reach the server (network or firewall)
+    severity_hint: HIGH
+    patterns:
+      - 'A network-related or instance-specific error'
+      - 'Cannot connect to SQL Database'
+      - 'firewall'
+      - 'Connection refused|ConnectionRefused'
+      - 'Name or service not known|getaddrinfo|could not resolve host'
+      - 'No route to host'
+    cause: >-
+      The server couldn't be reached at all: a firewall rule, private endpoint or DNS change, the server
+      being down, or a VPN/ExpressRoute problem.
+    fix:
+      - Test the connection from the same runtime (linked service Test connection, or a notebook ping).
+      - Check recent firewall, private endpoint and DNS changes for that server.
+      - If the server is fine and nothing changed, treat it as transient and rely on retries.
+    examples:
+      - "A network-related or instance-specific error occurred while establishing a connection to SQL Server."
+      - "Cannot connect to SQL Database: 'sql-prod.database.windows.net'. Client with IP address '20.1.2.3' is not allowed to access the server. Check firewall rules."
+
+  - id: throttled
+    title: The destination is throttling requests
+    severity_hint: LOW
+    patterns:
+      - 'throttl'
+      - '\b429\b'
+      - 'Request rate is large'
+      - 'TooManyRequests'
+      - '(resource|request) limit.*(has been )?reached'
+    cause: >-
+      The database, API or storage account is limiting how fast the pipeline can write. The pipeline is
+      asking for more throughput than the current tier allows.
+    fix:
+      - Lower parallel copies / DIUs or the batch size for this activity.
+      - Move the load to a quieter window, or scale the tier up for the load and down afterwards.
+      - Make sure retries back off instead of hammering the service.
+    examples:
+      - "Request rate is large. More Request Units may be needed, so no changes were made. Status 429"
+      - "The request limit for the database is 400 and has been reached. Resource limit has been reached."
+
+  - id: timeout
+    title: An activity ran too long and timed out
+    severity_hint: HIGH
+    patterns:
+      - 'timed? ?out'
+      - 'timeout'
+      - 'exceeded the (maximum )?allowed (execution )?time'
+    cause: >-
+      A step ran longer than its timeout: a slow source query, much more data than usual, a lock on the
+      source table, or a hung connection.
+    fix:
+      - Compare data volume and duration with recent successful runs.
+      - Check the source for slow queries or locks at that time.
+      - Partition the load or add an incremental filter; raise the timeout only after you know why it's slow.
+    examples:
+      - "Operation on target Copy_Orders failed: The operation has timed out."
+      - "Activity Notebook_Transform failed: Execution timeout. The activity exceeded the allowed execution time."
+
+  # --- Fallbacks: used only when nothing specific matched ------------------------------------------------
+
+  - id: freshness_sla_breach
+    title: Data is late (SLA or freshness breach)
+    fallback: true
+    event_types: [sla_breach]
+    cause: >-
+      The pipeline or table didn't finish or refresh by its deadline. Usually an upstream delay, a
+      slower-than-normal run, or an earlier failed step that nobody noticed.
+    fix:
+      - Find the first step in the chain that ran late or failed, not just the last one.
+      - Tell the report's users the data is late, with an expected time.
+      - If it keeps happening, move the schedule or speed up the slowest step.
+    examples: [sla_breach]
+
+  - id: adf_user_error
+    title: ADF pipeline failed (configuration or data issue)
+    fallback: true
+    sources: [azure_monitor]
+    event_types: [failure]
+    failure_type: UserError
+    cause: >-
+      Azure Data Factory classed this as a user error: something in the pipeline, its settings or the
+      data, not an Azure outage. The alert itself doesn't include the error text.
+    fix:
+      - Open the run in ADF Monitor and read the failed activity's error.
+      - Look for a recent change (deployment, linked service, parameters, source data) around the failure time.
+      - Re-run from the failed activity once fixed.
+    examples: [adf_user_error]
+
+  - id: adf_system_error
+    title: ADF pipeline failed (service or runtime issue)
+    fallback: true
+    sources: [azure_monitor]
+    event_types: [failure]
+    failure_type: SystemError
+    cause: >-
+      Azure Data Factory classed this as a system error: a problem in the service or the integration
+      runtime rather than your pipeline logic. These are often transient.
+    fix:
+      - Check Azure status and your integration runtime's health for that region and time.
+      - Re-run the pipeline; add a retry policy to the failing activity if this repeats.
+      - If it keeps failing, open a support case with the run id.
+    examples: [adf_system_error]
+
+  - id: databricks_job_failed
+    title: Databricks job run failed
+    fallback: true
+    sources: [databricks]
+    event_types: [failure]
+    cause: >-
+      The job run failed. Databricks job webhooks don't include the error text, so the exact cause is in
+      the run itself.
+    fix:
+      - Open the run link and read the failed task's error and the last cells of its output.
+      - Check whether the cluster started (event log) and whether upstream tables were ready.
+      - Repair-run only the failed tasks once fixed.
+    examples: [databricks_job_failed]

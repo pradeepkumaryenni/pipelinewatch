@@ -49,12 +49,16 @@ def main(argv: list[str] | None = None) -> int:
             if ok and step.expect_route:
                 ok = (body.get("route") == step.expect_route and body.get("decision") == step.expect_decision
                       and body.get("replay", False) == step.expect_replay)
+                if step.expect_explanation:
+                    ok = ok and (body.get("explanation") or {}).get("id") == step.expect_explanation
             failures += not ok
             got = f"route {body.get('route')}, decision {body.get('decision')}" if "route" in body else body.get("detail")
             print(f"  {'PASS' if ok else 'FAIL'}  {step.label}\n        HTTP {status} -> {got}"
                   + (" (replay)" if body.get("replay") else ""))
             if body.get("summary"):
                 print(f"        {body['summary']}")
+            if body.get("explanation"):
+                print(f"        Likely cause: {body['explanation']['title']}")
     print(f"\n{'All steps passed.' if not failures else f'{failures} step(s) failed.'}")
     return 1 if failures else 0
 

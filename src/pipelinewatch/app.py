@@ -16,12 +16,15 @@ import secrets
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 
 from . import __version__
 from .classify import classify
 from .config import Config, api_keys_from_env
+from .dashboard import render as render_dashboard
+from .explain import explain
 from .normalise import SOURCE_PATHS, UnsupportedPayload, normalise
-from .notify import Notifier, channels_from_env
+from .notify import Notifier, channels_from_env, digest_message
 from .store import InMemoryStore, Store
 
 # Fields returned to the sender; the full alert (including the raw payload) stays in the store.
@@ -44,7 +47,7 @@ def create_app(config: Config | None = None, api_keys: list[str] | None = None,
     config = config or Config.load()
     keys = api_keys if api_keys is not None else api_keys_from_env()
     store = store if store is not None else store_from_env(config)
-    notifier = notifier or Notifier(channels_from_env(), config.notifications)
+    notifier = notifier or Notifier(channels_from_env(), config.notifications, digest_channels=config.digest)
 
     app = FastAPI(title="PipelineWatch", version=__version__)
     app.state.config, app.state.store, app.state.notifier = config, store, notifier
@@ -76,13 +79,17 @@ def create_app(config: Config | None = None, api_keys: list[str] | None = None,
         except UnsupportedPayload as exc:
             raise HTTPException(422, str(exc))
 
-        registered = store.register(classify(alert, config))
+        classified = classify(alert, config)
+        classified["explanation"] = explain(classified)
+        registered = store.register(classified)
         if not registered.replay and notifier.targets(registered.decision):
             # Answer the sender straight away; deliveries (with retries) happen after the response.
             background.add_task(notifier.send, registered.alert, registered.decision, registered.alert_id, store)
         saved = registered.alert
+        explanation = saved.get("explanation")
         return {**{k: saved.get(k) for k in RESPONSE_FIELDS}, "alert_id": registered.alert_id,
-                "decision": registered.decision, "occurrence": registered.occurrence, "replay": registered.replay}
+                "decision": registered.decision, "occurrence": registered.occurrence, "replay": registered.replay,
+                "explanation": {"id": explanation["id"], "title": explanation["title"]} if explanation else None}
 
     @app.get("/alerts", dependencies=[Depends(require_key)])
     def recent_alerts(limit: int = Query(default=50, ge=1, le=500)) -> list[dict[str, Any]]:
@@ -92,6 +99,25 @@ def create_app(config: Config | None = None, api_keys: list[str] | None = None,
     @app.get("/alerts/{alert_id}/deliveries", dependencies=[Depends(require_key)])
     def alert_deliveries(alert_id: int) -> list[dict[str, Any]]:
         return store.deliveries(alert_id)
+
+    @app.post("/digest/send", dependencies=[Depends(require_key)])
+    def send_digest(dry_run: bool = Query(default=False)) -> dict[str, Any]:
+        """Send one message with every LOW alert not yet digested. Call it once a day from a scheduler."""
+        pending = store.pending_digest()
+        head, lines = digest_message(pending) if pending else ("Nothing to digest", [])
+        if dry_run or not pending:
+            return {"alerts": len(pending), "sent": [], "preview": [head, *lines]}
+        if not notifier.digest_channels:
+            raise HTTPException(409, "No digest channel is configured with secrets (see config 'digest')")
+        results = notifier.send_digest(pending, store)
+        if any(status == "SENT" for _, status in results):
+            store.mark_digested([a["alert_id"] for a in pending])
+        return {"alerts": len(pending), "sent": results, "preview": [head, *lines]}
+
+    @app.get("/dashboard", response_class=HTMLResponse, dependencies=[Depends(require_key)])
+    def dashboard() -> str:
+        # Open it as /dashboard?key=... in a browser. Use HTTPS in production.
+        return render_dashboard(store)
 
     return app
 

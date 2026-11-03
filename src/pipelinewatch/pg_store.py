@@ -98,6 +98,25 @@ class PostgresStore:
             return conn.execute("SELECT alert_id, channel, status, detail, delivered_at FROM pipelinewatch.delivery_log "
                                 "WHERE alert_id = %s ORDER BY delivery_id", (alert_id,)).fetchall()
 
+    def pending_digest(self, limit: int = 500) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT alert_id, alert FROM pipelinewatch.alert_log "
+                "WHERE decision = 'DIGEST' AND digested_at IS NULL ORDER BY alert_id LIMIT %s", (limit,)).fetchall()
+        return [{**r["alert"], "alert_id": r["alert_id"]} for r in rows]
+
+    def mark_digested(self, alert_ids: list[int], when: datetime | None = None) -> None:
+        if not alert_ids:
+            return
+        with self._connect() as conn:
+            conn.execute("UPDATE pipelinewatch.alert_log SET digested_at = %s WHERE alert_id = ANY(%s)",
+                         (when or utcnow(), list(alert_ids)))
+
+    def open_windows(self) -> list[WindowState]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM pipelinewatch.dedup_state ORDER BY window_started_at DESC").fetchall()
+        return [WindowState(**r) for r in rows]
+
     def reset(self) -> None:
         """Delete all data (tests and demos only)."""
         with self._connect() as conn:

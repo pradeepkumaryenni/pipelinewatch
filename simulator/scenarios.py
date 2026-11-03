@@ -20,6 +20,7 @@ class Step:
     expect_decision: str | None = None  # final decision after de-duplication
     expect_replay: bool = False
     expect_http: int = 200
+    expect_explanation: str | None = None  # failure-catalog id, when the step checks it
 
 
 def build_scenarios() -> dict[str, list[Step]]:
@@ -79,6 +80,24 @@ def build_scenarios() -> dict[str, list[Step]]:
             Step("Dev nightly_sales_etl succeeded (only a LOW digest was open, so log only)",
                  databricks_job_event("jobs.on_success", "nightly_sales_etl", workspace_id=DEV_WORKSPACE_ID),
                  "databricks", "RESOLVE", "LOG_ONLY"),
+        ],
+        "explained_errors": [
+            Step("Copy activity hits a value that doesn't fit the column (explained: copy_type_conversion)",
+                 generic_event(source="adf_web_activity", event_type="failure", pipeline="pl_load_finance_gl",
+                               environment="prod",
+                               message="ErrorCode=UserErrorInvalidDataValue,'Column 'amount' contains an invalid value 'N/A'.'"),
+                 "generic", "PAGE", "PAGE", expect_explanation="copy_type_conversion"),
+            Step("Two jobs write the same Delta table (explained: delta_concurrent_write)",
+                 generic_event(source="databricks_task", event_type="failure", pipeline="silver_orders_merge",
+                               environment="prod",
+                               message="io.delta.exceptions.ConcurrentAppendException: Files were added to partition "
+                                       "[date=2026-11-03] by a concurrent update."),
+                 "generic", "NOTIFY", "NOTIFY", expect_explanation="delta_concurrent_write"),
+            Step("Key Vault secret expired (explained: credential_expired)",
+                 generic_event(source="adf_web_activity", event_type="failure", pipeline="pl_ingest_crm_accounts",
+                               environment="prod",
+                               message="AADSTS7000222: The provided client secret keys for app '1111' are expired."),
+                 "generic", "NOTIFY", "NOTIFY", expect_explanation="credential_expired"),
         ],
         "unknown_payload": [
             Step("Unrecognised JSON from some other tool",

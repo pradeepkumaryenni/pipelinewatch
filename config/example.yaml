@@ -26,8 +26,11 @@ pipeline_tiers:
 dedup_window_minutes: 15
 
 # Which decisions notify which channels. A channel only sends when its secrets are set in the
-# environment (see README). DIGEST alerts are stored for the daily digest (v0.3).
+# environment (see README). DIGEST alerts wait for the daily digest.
 notifications:
   PAGE: [slack, teams, telegram]
   NOTIFY: [slack, teams]
   RESOLVE: [slack, teams, telegram]
+
+# Channels that receive the daily digest of LOW alerts (POST /digest/send, run it from a daily scheduler).
+digest: [slack]

@@ -30,6 +30,9 @@ class Store(Protocol):
     def recent(self, limit: int = 50) -> list[dict[str, Any]]: ...
     def log_delivery(self, alert_id: int, channel: str, status: str, detail: str | None = None) -> None: ...
     def deliveries(self, alert_id: int) -> list[dict[str, Any]]: ...
+    def pending_digest(self, limit: int = 500) -> list[dict[str, Any]]: ...
+    def mark_digested(self, alert_ids: list[int], when: datetime | None = None) -> None: ...
+    def open_windows(self) -> list[WindowState]: ...
 
 
 def utcnow() -> datetime:
@@ -86,3 +89,19 @@ class InMemoryStore:
     def deliveries(self, alert_id: int) -> list[dict[str, Any]]:
         with self._lock:
             return [d for d in self._deliveries if d["alert_id"] == alert_id]
+
+    def pending_digest(self, limit: int = 500) -> list[dict[str, Any]]:
+        """DIGEST alerts not yet included in a digest, oldest first."""
+        with self._lock:
+            return [r for r in self._log if r["decision"] == "DIGEST" and not r.get("digested_at")][:limit]
+
+    def mark_digested(self, alert_ids: list[int], when: datetime | None = None) -> None:
+        when, wanted = when or utcnow(), set(alert_ids)
+        with self._lock:
+            for row in self._log:
+                if row["alert_id"] in wanted:
+                    row["digested_at"] = when
+
+    def open_windows(self) -> list[WindowState]:
+        with self._lock:
+            return sorted(self._windows.values(), key=lambda w: w.window_started_at, reverse=True)

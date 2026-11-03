@@ -31,6 +31,7 @@ class Config:
     pipeline_tiers: dict[str, int] = field(default_factory=dict)
     dedup_window_minutes: int = 15
     notifications: dict[str, list[str]] = field(default_factory=lambda: dict(DEFAULT_ROUTES))
+    digest: list[str] = field(default_factory=lambda: ["slack"])
 
     def tier(self, pipeline: str) -> int:
         """Business tier of a pipeline; anything not configured is tier 3."""
@@ -56,8 +57,11 @@ class Config:
             if unknown:
                 raise ValueError(f"notifications.{decision}: unknown channel(s) {sorted(unknown)}")
             routes[decision] = list(channels or [])
+        digest = ["slack"] if "digest" not in data else list(data.get("digest") or [])
+        if set(digest) - CHANNELS:
+            raise ValueError(f"digest: unknown channel(s) {sorted(set(digest) - CHANNELS)}")
         return cls(databricks_workspaces=workspaces, pipeline_tiers=tiers,
-                   dedup_window_minutes=window, notifications=routes)
+                   dedup_window_minutes=window, notifications=routes, digest=digest)
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Config":

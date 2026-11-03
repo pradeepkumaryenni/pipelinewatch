@@ -41,6 +41,19 @@ def test_resolve_closes_window_so_next_failure_alerts(store, config):
     assert store.register(again, T0 + timedelta(minutes=4)).decision == "PAGE"
 
 
+def test_digest_queue_and_open_windows(store, config):
+    from simulator.events import DEV_WORKSPACE_ID
+    low = [classified(config, databricks_job_event("jobs.on_failure", job, run_id=i, workspace_id=DEV_WORKSPACE_ID))
+           for i, job in enumerate(("job_a", "job_b"))]
+    ids = [store.register(a, T0).alert_id for a in low]
+    store.register(classified(config, databricks_job_event("jobs.on_failure", "nightly_sales_etl", run_id=50)), T0)
+    assert [a["alert_id"] for a in store.pending_digest()] == ids
+    assert {w.fingerprint for w in store.open_windows()} == {
+        "databricks:dev:job_a:failure", "databricks:dev:job_b:failure", "databricks:prod:nightly_sales_etl:failure"}
+    store.mark_digested(ids[:1], T0 + timedelta(hours=1))
+    assert [a["alert_id"] for a in store.pending_digest()] == ids[1:]
+
+
 def test_recent_and_deliveries(store, config):
     reg = store.register(classified(config, databricks_job_event("jobs.on_failure", "nightly_sales_etl", run_id=9)))
     store.log_delivery(reg.alert_id, "slack", "SENT", "HTTP 200")
