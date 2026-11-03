@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pipelinewatch"
-version = "0.1.0"
+version = "0.2.0"
 description = "Plain-English alerts for failed Azure Data Factory and Databricks pipelines."
 readme = "README.md"
 license = "MIT"
@@ -16,10 +16,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
 dev = ["pytest>=8", "httpx>=0.27"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+pipelinewatch = ["schema.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

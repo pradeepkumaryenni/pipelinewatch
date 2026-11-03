@@ -1,5 +1,8 @@
 """Send the demo scenarios to a running PipelineWatch server and check every answer.
 
+Expectations assume a freshly started server: a second run inside the dedup window will (correctly)
+see SUPPRESS where the first run saw NOTIFY/PAGE.
+
     python -m simulator.send --url http://127.0.0.1:8000 --key dev-key
     python -m simulator.send --url http://127.0.0.1:8000 --key dev-key --only adf_failure recovery
 """
@@ -44,9 +47,10 @@ def main(argv: list[str] | None = None) -> int:
             status, body = post(f"{args.url.rstrip('/')}/webhooks/{step.source}", args.key, step.payload)
             ok = status == step.expect_http
             if ok and step.expect_route:
-                ok = body.get("route") == step.expect_route and body.get("replay", False) == step.expect_replay
+                ok = (body.get("route") == step.expect_route and body.get("decision") == step.expect_decision
+                      and body.get("replay", False) == step.expect_replay)
             failures += not ok
-            got = body.get("route") or body.get("detail")
+            got = f"route {body.get('route')}, decision {body.get('decision')}" if "route" in body else body.get("detail")
             print(f"  {'PASS' if ok else 'FAIL'}  {step.label}\n        HTTP {status} -> {got}"
                   + (" (replay)" if body.get("replay") else ""))
             if body.get("summary"):

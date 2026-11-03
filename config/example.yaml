@@ -20,3 +20,14 @@ pipeline_tiers:
   pl_ingest_crm_accounts: 2
   customer_360_refresh: 2
   pl_refresh_marketing_lookup: 3
+
+# Repeats of the same problem (same source, environment, pipeline and event type) inside this window are
+# suppressed unless they are more severe than what was already sent. A recovery closes the window.
+dedup_window_minutes: 15
+
+# Which decisions notify which channels. A channel only sends when its secrets are set in the
+# environment (see README). DIGEST alerts are stored for the daily digest (v0.3).
+notifications:
+  PAGE: [slack, teams, telegram]
+  NOTIFY: [slack, teams]
+  RESOLVE: [slack, teams, telegram]

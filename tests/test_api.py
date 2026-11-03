@@ -15,6 +15,7 @@ def test_simulator_scenarios(client, headers, name):
         if step.expect_route:
             body = response.json()
             assert body["route"] == step.expect_route, step.label
+            assert body["decision"] == step.expect_decision, step.label
             assert body["replay"] is step.expect_replay, step.label
 
 
